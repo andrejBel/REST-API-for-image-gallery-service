@@ -1,0 +1,296 @@
+version: "3.4"
+services:
+    rest:
+        build: ./rest/
+        container_name: rest
+        hostname: rest
+        environment:
+            MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+            MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+            MINIO_STORAGE_ENDPOINT: ${MINIO_STORAGE_ENDPOINT}
+        env_file:
+            - ./rest/.env.dev
+        depends_on:
+           - "pgpool"
+           - "pgmaster"
+           - "pgslave1"
+           - "minio"
+           - "graylog"
+           - "redis"
+        restart: always
+        command: bash -c "
+            ./wait-for-it.sh pgpool:5432 -t 300 --
+            python3 ./manage.py makemigrations &&
+            python3 ./manage.py migrate &&
+            python3 ./manage.py createdefaultadmin &&
+            python3 ./manage.py populate_db &&
+            ./runserver.sh"
+        volumes:
+            - ./rest:/usr/src/app
+        networks:
+            soanet:
+                aliases:
+                    - rest
+        ports:
+            - 8000:8000
+    haproxy:
+        image: haproxy
+        container_name: haproxy
+        volumes:
+            - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+        networks:
+            soanet:
+                aliases:
+                    - haproxy
+        ports:
+            - 81:81
+            - 80:80
+        restart: always
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    varnish:
+        image: varnish
+        container_name: varnish
+        volumes:
+            - ./varnish/default.vcl:/etc/varnish/default.vcl:ro
+        networks:
+            soanet:
+                aliases:
+                    - varnish
+        restart: always
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    redis:
+        image: redis
+        container_name: redis
+        volumes:
+            - redis:/data
+        networks:
+            - soanet
+        ports:
+            - 127.0.0.1:6379:6379
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    minio:
+        image: minio/minio
+        container_name: minio
+        volumes:
+            - minio:/data
+        networks:
+            - soanet
+        ports:
+            - 9001:9000
+        environment:
+            MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+            MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+        command: server /data/minio
+        healthcheck:
+            test: ["CMD", "curl", "-f", "http://minio:9000/minio/health/live"]
+            interval: 1m30s
+            timeout: 20s
+            retries: 3
+            start_period: 3m
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    grafana:
+        image: grafana/grafana
+        container_name: grafana
+        volumes:
+            - grafana:/var/lib/grafana
+        networks:
+            - soanet
+        ports:
+            - 127.0.0.1:3000:3000
+        env_file:
+            - './grafana/env.grafana'
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    influxdb:
+        image: influxdb
+        container_name: influxdb
+        volumes:
+            - influxdb:/var/lib/influxdb
+        networks:
+            - soanet
+        ports:
+            - 127.0.0.1:8083:8083
+            - 127.0.0.1:8086:8086
+            - 127.0.0.1:8090:8090
+        env_file:
+            - './influxdb/env.influxdb'
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    telegraf:
+        image: telegraf:latest
+        container_name: telegraf
+        volumes:
+            - ./telegraf/telegraf.conf:/etc/telegraf/telegraf.conf:ro
+            - /var/run/docker.sock:/var/run/docker.sock
+        networks:
+            - soanet
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    mongo:
+        image: mongo:3
+        container_name: mongo
+        networks:
+            - soanet
+        ports:
+            - 127.0.0.1:27017:27017
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    elasticsearch:
+        image: docker.elastic.co/elasticsearch/elasticsearch-oss:6.6.1
+        container_name: elasticsearch
+        networks:
+            - soanet
+        env_file:
+            - './elasticsearch/env.elasticsearch'
+        ulimits:
+            memlock:
+                soft: -1
+                hard: -1
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    graylog:
+        image: graylog/graylog:3.0
+        container_name: graylog
+        networks:
+            - soanet
+        env_file:
+            - './graylog/env.graylog'
+        ports:
+            - 127.0.0.1:9000:9000
+            - 127.0.0.1:1514:1514
+            - 127.0.0.1:1514:1514/udp
+            - 127.0.0.1:12201:12201
+            - 127.0.0.1:12201:12201/udp
+
+    pgpool:
+        image: postdock/pgpool:edge
+        container_name: pgpool
+        networks:
+            - soanet
+        #env_file:
+        #    - './pgpool/env.pgpool'
+        environment:
+            PCP_USER: pcp_user
+            PCP_PASSWORD: pcp_pass
+            WAIT_BACKEND_TIMEOUT: 60
+            CHECK_USER: monkey_user
+            CHECK_PASSWORD: monkey_pass
+            CHECK_PGCONNECT_TIMEOUT: 3
+            SSH_ENABLE: 1
+            DB_USERS: monkey_user:monkey_pass
+            BACKENDS: "0:pgmaster:5432:1:/var/lib/postgresql/data:ALLOW_TO_FAILOVER,1:pgslave1::::"
+            REQUIRE_MIN_BACKENDS: 1
+            CONFIGS: "num_init_children:250,max_pool:4"
+        volumes:
+            - ./ssh/:/tmp/.ssh/keys
+        ports:
+            - 127.0.0.1:5430:5432
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    pgmaster:
+        image: postdock/postgres:edge
+        container_name: pgmaster
+        networks:
+            - soanet
+        # env_file:
+        #    - './pgmaster/env.pgmaster'
+        environment:
+            NODE_ID: 1
+            NODE_NAME: node1
+            CLUSTER_NODE_NETWORK_NAME: pgmaster
+            PARTNER_NODES: "pgmaster,pgslave1"
+            REPLICATION_PRIMARY_HOST: pgmaster
+            NODE_PRIORITY: 100
+            SSH_ENABLE: 1
+            POSTGRES_PASSWORD: monkey_pass
+            POSTGRES_USER: monkey_user
+            POSTGRES_DB: monkey_db
+            CLEAN_OVER_REWIND: 0
+            CONFIGS_DELIMITER_SYMBOL: ;
+            CONFIGS: "listen_addresses:'*';max_replication_slots:5"
+            CLUSTER_NAME: pg_cluster
+            REPLICATION_DB: replication_db
+            REPLICATION_USER: replication_user
+            REPLICATION_PASSWORD: replication_pass
+        ports:
+            - 127.0.0.1:5431:5432
+        volumes:
+            - pgmaster:/var/lib/postgresql/data
+            - ./ssh/:/tmp/.ssh/keys
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+    pgslave1:
+        image: postdock/postgres:edge
+        container_name: pgslave1
+        networks:
+            - soanet
+        #env_file:
+        #    - './pgslave/env.pgslave1'
+        environment:
+            NODE_ID: 2
+            NODE_NAME: node2
+            CLUSTER_NODE_NETWORK_NAME: pgslave1
+            SSH_ENABLE: 1
+            PARTNER_NODES: "pgmaster,pgslave1"
+            REPLICATION_PRIMARY_HOST: pgmaster
+            CLEAN_OVER_REWIND: 1
+            CONFIGS_DELIMITER_SYMBOL: ;
+            CONFIGS: "max_replication_slots:10"
+        ports:
+            - 127.0.0.1:5432:5432
+        volumes:
+            - pgslave1:/var/lib/postgresql/data
+            - ./ssh/:/tmp/.ssh/keys
+        logging:
+            driver: gelf
+            options:
+                gelf-address: "udp://localhost:12201"
+
+networks:
+    soanet:
+
+volumes:
+    minio:
+    redis:
+    grafana:
+    influxdb:
+    pgmaster:
+    pgslave1:
+    rest:

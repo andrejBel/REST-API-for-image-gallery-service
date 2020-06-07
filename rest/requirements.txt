@@ -1,0 +1,14 @@
+Django==3.0.2
+psycopg2>=2.7,<3.0
+djangorestframework==3.11.0
+gunicorn==20.0.4
+whitenoise==5.0.1
+django-minio-storage==0.3.7
+Pillow==7.0.0
+django-filter==2.2.0
+django-extensions==2.2.8
+pygraphviz==1.5
+drf-yasg==1.17.1
+graypy==2.1.0
+django-cacheops==4.2
+django-rest-framework-social-oauth2==1.1.0
