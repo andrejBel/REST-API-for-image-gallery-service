@@ -13,7 +13,7 @@ The diagram shows the general components without naming any specific softwares b
 
 Basic API documentation can be found [here](api_documentation.md).
 
-More thorough documentation of the API's endpoints, methods and parameters can be found at path [] [here](http://195.148.20.53:8000/swagger).
+More thorough documentation of the API's endpoints, methods and parameters can be found at path [server_adress:8000]/swagger
 
 ---
 
